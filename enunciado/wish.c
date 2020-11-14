@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <fcntl.h>
 
 
 //Variables globales
@@ -153,4 +154,111 @@ int execute(char *comand){
         }
     }
     return exitBash;
+}
+
+//Método para validar si se ingreso un comando o un Script y verificamos si hay redirección
+int executeFileOrComand(char *comand, int paralel){
+    int exitConsole = 0;
+
+    char *initCommand;
+    char *redirectFile;
+
+    //busco el signo de redireccion para saber si es necesario realizarla
+    char *redicetionPint = strchr(comand, '>');
+    int redirectIndex = (redicetionPint == NULL ? -1 : redicetionPint - comand);
+    int console = dup(1);
+    if (redirectIndex == -1){
+        initCommand = (char *)malloc(strlen(comand));
+        strcpy(initCommand, comand);
+    }
+    else if (redirectIndex == 0){
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        return exitConsole;
+    }
+    else{
+        //si hay redireccion separo el comando del archivo destino
+        int spaces = consecutiveSpaces(comand, redirectIndex - 1, 1);
+        //error si no hay comando
+        if (redirectIndex - spaces == 0){
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return exitConsole;
+        }
+        initCommand = (char *)malloc(redirectIndex - spaces);
+        subString(comand, 0, redirectIndex - spaces, initCommand);
+        spaces = consecutiveSpaces(comand, redirectIndex + 1, 0);
+        int fileNameLen = strlen(comand) - redirectIndex - spaces - 1;
+        //error si no hay archivo destino
+        if (fileNameLen == 0){
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return exitConsole;
+        }
+        redirectFile = (char *)malloc(fileNameLen);
+        subString(comand, redirectIndex + spaces + 1, fileNameLen, redirectFile);
+        char *error = strchr(redirectFile, ' ');
+        //error si existe otro argumento despues de la redirección
+        if (error != NULL){
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return exitConsole;
+        }
+        //error si hay mas de una redirección 
+        error = strchr(redirectFile, '>');
+        if (error != NULL){
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return exitConsole;
+        }
+    }
+    FILE *file = fopen(initCommand, "r");
+
+    if (file == NULL){
+        //si hay redirección se desvia a la salida al archivo destino
+        if (redirectIndex != -1){
+            int fd = open(redirectFile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+            dup2(fd, 1);
+            close(fd);
+        }
+        exitConsole = selectComand(initCommand, paralel);
+        
+        //despues de imprimir el comando se reestablece la salida a la consola
+        if (redirectIndex != -1){
+            dup2(console, 1);
+            close(console);
+        }
+    }
+    else{
+        char *line;
+        size_t len = 0;
+        ssize_t read;
+        //si hay redirección se desvia a la salida al archivo destino
+        if (redirectIndex != 1){
+            int fd = open(redirectFile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+
+            dup2(fd, 1); 
+
+            close(fd);
+        }
+        while ((read = getline(&line, &len, file)) != -1){
+            if (strchr(line, '#') != NULL){
+                continue;
+            }
+            char realLine[read];
+            if (strchr(line, '\n') != NULL){
+                strncpy(realLine, line, read - 1);
+                realLine[read - 1] = '\0';
+            }
+            else{
+                strncpy(realLine, line, read);
+            }
+            exitConsole = selectComand(realLine, 0);
+        }
+        fclose(file);
+        //despues de imprimir el comando se reestablece la salida a la consola
+        if (redirectIndex != -1){
+            dup2(console, 1);
+            close(console);
+        }
+        if (paralel != 0){
+            exit(0);
+        }
+    }
+    return exitConsole;
 }
