@@ -11,6 +11,8 @@ char **path;
 static char error_message[25] = "An error has occurred\n";
 //Firma de los métodos
 int execute(char *comand);
+int executeFileOrComand(char *comand, int paralel);
+int selectComand(char *comand, int paralel);
 
 int main(int argc, char const *argv[]){
     //path inicial
@@ -46,6 +48,7 @@ int main(int argc, char const *argv[]){
     //En caso que se ingrese un script con las instrucciones
     else if (argc == 2){
 
+        //Manejo del archivo ingresado
         FILE *file = fopen(argv[1], "r");
         if (file != NULL){
             char *line;
@@ -60,8 +63,10 @@ int main(int argc, char const *argv[]){
                     continue;
                 }
 
+                //Buscamos primer espacio en la linea leída
                 spacePoint = strchr(line, ' ');
                 spaceIndex = (spacePoint == NULL ? -1 : spacePoint - line);
+
                 if (spaceIndex == 0){
                     spaces = consecutiveSpaces(line, spaceIndex, 0);
                 }
@@ -96,8 +101,8 @@ int main(int argc, char const *argv[]){
 int execute(char *comand){
     int exitBash = 0;
     //Separamos los comandos ingresados
-    char *paralelPoint = strchr(comand, '&');
-    int paralelIndex = (paralelPoint == NULL ? -1 : paralelPoint - comand);
+    char *paralelPoint = strchr(comand, '&'); 
+    int paralelIndex = (paralelPoint == NULL ? -1 : paralelPoint - comand); 
     if (paralelIndex == -1){
         exitBash = executeFileOrComand(comand, 0);
     }
@@ -262,3 +267,23 @@ int executeFileOrComand(char *comand, int paralel){
     }
     return exitConsole;
 }
+
+//Segun el comando redireccionamos al método correspondiente, si es integrado o a la ejecucion general si no lo es
+int selectComand(char *comand, int paralel){
+    int exit = 0;
+    if (strncmp(comand, "exit", 4) == 0){
+        if (strlen(comand) < 5){
+            exit = 1;
+        }else{
+            write(STDERR_FILENO, error_message, strlen(error_message));
+        }
+    }else if (strncmp(comand, "cd", 2) == 0){
+        comandCD(comand);
+    }else if (strncmp(comand, "path", 4) == 0){
+        comandPath(comand);
+    }else{
+        executeComand(comand, paralel);
+    }
+    return exit;
+}
+
