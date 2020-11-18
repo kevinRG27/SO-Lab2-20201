@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 
 
 //Variables globales
@@ -10,9 +11,16 @@ int pathLen = 0;
 char **path;
 static char error_message[25] = "An error has occurred\n";
 //Firma de los métodos
+int consecutiveSpaces(char *input, int startIndex, short reverse);
+char *subString(const char *input, int offset, int len, char *dest);
 int execute(char *comand);
 int executeFileOrComand(char *comand, int paralel);
 int selectComand(char *comand, int paralel);
+void comandCD(char *comand);
+void comandPath(char *comand);
+void executeComand(char *comand, int paralel);
+char **getArguments(char *comand, int *argSize);
+void freeArguments(char **arguments, int argSize);  
 
 int main(int argc, char const *argv[]){
     //path inicial
@@ -96,6 +104,35 @@ int main(int argc, char const *argv[]){
         exit(1);
     }
     exit(0);
+}
+
+//Encontramos la cantidad de espacios consecutivos en un string a partir de un indice enviado como parametro,
+//reverse == 1 como flag para retroceder en vez de avanzar en el string para contar
+int consecutiveSpaces(char *input, int startIndex, short reverse){
+    int spaces = 0;
+    int i = startIndex;
+    char actualChar = input[i];
+    while ((actualChar == ' ' || actualChar == '\t' || actualChar == '\n') && (i < strlen(input) && i >= 0)){
+        spaces++;
+        if (reverse == 0){
+            i++;
+        }else{
+            i--;
+        }
+        actualChar = input[i];
+    }
+    return spaces;
+}
+
+char *subString(const char *input, int offset, int len, char *dest){
+    int input_len = strlen(input);
+
+    if (offset + len > input_len){
+        return NULL;
+    }
+    dest[len] = '\0';
+    strncpy(dest, input + offset, len);
+    return dest;
 }
 
 int execute(char *comand){
@@ -286,4 +323,165 @@ int selectComand(char *comand, int paralel){
     }
     return exit;
 }
+
+void comandCD(char *comand){
+    char *startPath = strchr(comand, ' ');
+    int startPathIndex = (startPath == NULL ? -1 : startPath - comand);
+    char *endPath = strrchr(comand, ' ');
+    int endPathIndex = (endPath == NULL ? -1 : endPath - comand);
+    if ((startPathIndex > -1) && (endPathIndex == startPathIndex)){
+        int pathLen = strlen(comand) - startPathIndex + 1;
+        char cdArg[pathLen - 1];
+        char cdPath[pathLen];
+        cdPath[0] = '\0';
+        subString(comand, startPathIndex + 1, pathLen - 2, cdArg);
+        strcat(cdPath, cdArg);
+        int cdSuccess = chdir(cdPath);
+        if (cdSuccess < 0){
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return;
+        }
+    }
+    else{
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        return;
+    }
+}
+
+void comandPath(char *comand){
+    for (size_t i = 0; i < pathLen; i++){
+        free(path[i]);
+        pathLen = 0;
+    }
+    char *startPath = strchr(comand, ' ');
+    int startPathIndex = (startPath == NULL ? -1 : startPath - comand);
+    char *acomulated = (char *)malloc(strlen(comand));
+    int nextLen;
+    int spaces;
+    if (startPathIndex == -1){
+        return;
+    }
+    else{
+        spaces = consecutiveSpaces(comand, startPathIndex, 0);
+        nextLen = strlen(comand) - startPathIndex - spaces;
+        subString(comand, startPathIndex + spaces, nextLen, acomulated);
+    }
+    do{
+        pathLen++;
+        startPath = strchr(acomulated, ' ');
+        startPathIndex = (startPath == NULL ? -1 : startPath - acomulated);
+        if (startPathIndex != -1){
+            char nextPath[startPathIndex];
+            subString(acomulated, 0, startPathIndex, nextPath);
+            path = (char **)realloc(path, (pathLen) * sizeof(char *));
+            path[pathLen - 1] = strdup(nextPath);
+            spaces = consecutiveSpaces(acomulated, startPathIndex, 0);
+            nextLen = strlen(acomulated) - startPathIndex - spaces;
+            char temp[strlen(acomulated)];
+            strcpy(temp, acomulated);
+            acomulated = (char *)realloc(acomulated, nextLen);
+            subString(temp, startPathIndex + spaces, nextLen, acomulated);
+        }
+        else{
+            path = (char **)realloc(path, (pathLen) * sizeof(char *));
+            path[pathLen - 1] = strdup(acomulated);
+        }
+    } while (startPathIndex > -1);
+    free(acomulated);
+}
+
+//Ejecutamos los comandos no integrados
+void executeComand(char *comand, int paralel){
+    size_t i = 0;
+    short executed = 0;
+    short commandNoFound = 1;
+
+    while ((i < pathLen) && (executed == 0)){
+        int argSize;
+        char **arguments = getArguments(comand, &argSize);
+        int rc = 0;
+
+        if (paralel == 0){
+            rc = fork();
+        }
+        else if (rc < 0){
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return;
+        }
+        if (rc == 0){
+            //obtengo la direccion del ejecutable
+            int fullPathLen = strlen(path[i]) + strlen(arguments[0]);
+            char fullPath[fullPathLen + 1];
+            strcpy(fullPath, path[i]);
+            strcat(fullPath, "/");
+            strcat(fullPath, arguments[0]);
+            int successs = execv(fullPath, arguments);
+            if (successs < 0 && paralel == 0){
+                exit(1);
+            }
+        }
+        else{
+            int exitStatus;
+            waitpid(rc, &exitStatus, 0);
+            if (exitStatus == 0){
+                executed = 1;
+                commandNoFound = 0;
+            }
+            else if (exitStatus != 256){
+                commandNoFound = 0;
+            }
+        }
+        i++;
+    }
+    if (commandNoFound == 1){
+        write(STDERR_FILENO, error_message, strlen(error_message));
+    }
+};
+
+//devuelve una lista de strings con los argumentos de un comando no integrado
+char **getArguments(char *comand, int *argSize){
+    char **arguments = NULL;
+    int numArgs = 0;
+    char *argEndPoint;
+    int argEndIndex;
+    char acomulated[strlen(comand)];
+    char arg[64];
+    char *temp;
+    int nextLen;
+    int spaces;
+    strcpy(acomulated, comand);
+    do{
+        arguments = (char **)realloc(arguments, (numArgs + 1) * sizeof(char *));
+        argEndPoint = strchr(acomulated, ' ');
+        argEndIndex = (argEndPoint == NULL ? -1 : argEndPoint - acomulated);
+        if (argEndIndex > -1){
+            spaces = consecutiveSpaces(acomulated, argEndIndex, 0);
+            subString(acomulated, 0, argEndIndex, arg);
+            arguments[numArgs] = strdup(arg);
+            numArgs++;
+            nextLen = strlen(acomulated) - argEndIndex - spaces;
+            temp = (char *)malloc(strlen(acomulated));
+            strcpy(temp, acomulated);
+            subString(temp, argEndIndex + spaces, nextLen, acomulated);
+            free(temp);
+        }
+        else if (strlen(acomulated) > 1){
+            arguments[numArgs] = strdup(acomulated);
+            numArgs++;
+        }
+    } while (argEndPoint != NULL);
+    arguments = (char **)realloc(arguments, (numArgs + 1) * sizeof(char *));
+    arguments[numArgs] = NULL;
+    numArgs++;
+    *argSize = numArgs;
+    return arguments;
+}
+
+//Liberamos el espacio ocupado por los argumentos de un comando
+void freeArguments(char **arguments, int argSize){
+    for (size_t i = 0; i < argSize; i++){
+        free(arguments[i]);
+    }
+}
+
 
